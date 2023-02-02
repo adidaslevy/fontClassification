@@ -1,5 +1,6 @@
 import argparse
 from argparse import ArgumentParser
+import pandas as pd
 import h5py
 import pickle
 import numpy as np
@@ -12,6 +13,7 @@ import random
 import keras
 import os
 import sys
+import uuid
 from keras import optimizers
 from keras.utils import img_to_array
 from keras.preprocessing.image import ImageDataGenerator
@@ -29,7 +31,7 @@ from tensorflow import keras
 import os.path
 AUGMENTED_DATA_PICKLE = "augmentedData.pickle"
 LABELS_PICKLE = "labels.pickle"
-BASE_PATH = "/home/alevy/studies/computerVision/Project"
+WORKING_DIR = ""
 
 BATCH_SIZE = 128
 EPOCHS = 20
@@ -108,49 +110,133 @@ def conv_label(label):
 '''
 Organize and augment data
 '''
-def organaizeAndAugment(data):
+def organaizeData(data: ImageProperties, workingDir: str):
     counter=0
-    labels = []
-    retVal = []
-
+    dataSet = {"images": [], "fileNames": [], "labels": []}
+    
     for image in data:
         for i in range(len(image.charImages)):
             label = image.fonts[i]
             label = conv_label(label)
             pilImage = []
             try:
-                pilImage = openImage(image.charImages[i])
+                pilImage = sharpenImage(openImage(image.charImages[i]))
             except:
                 continue
             # Adding original image
             origImg = img_to_array(pilImage)
-            retVal.append(origImg)
-            labels.append(label)
-            
-            augument=["sharpen", "affine"]
-            for l in range(0,len(augument)):
-                a=itertools.combinations(augument, l+1)
-                for i in list(a): 
-                    combinations=list(i)
-                    print(len(combinations))
-                    temp_img = pilImage
-                    for j in combinations:
-                        if j == 'sharpen':
-                            # Adding Blur image
-                            temp_img = sharpen_image(temp_img)
-                            #imshow(blur_img)
-                        elif j == 'affine':
-                            # Adding affine rotation image
-                            temp_img = affine_rotation(origImg)
-                    #plt.imshow(temp_img)
-                    #plt.show()
-                temp_img = img_to_array(temp_img)
-                #plt.imshow(temp_img)
-                #plt.show()
-                retVal.append(temp_img)
-                labels.append(label)
-    return retVal, labels
-        #plt.show()
+            dataSet['images'].append(pilImage)
+            dataSet['labels'].append(label)
+    
+    # save char images in dataset dir
+    datasetDir = os.path.join(workingDir, 'dataset')
+    try:
+        os.mkdir(datasetDir)
+    except (FileExistsError):
+        print("Dir: {} already exists".format(datasetDir))
+    for image, label in zip(dataSet['images'], dataSet['labels']):
+        fileName = "img_" + str(label) + "_" + str(uuid.uuid4()) + ".jpg"
+        imageFileName = os.path.join(datasetDir, fileName)
+        image.save(imageFileName)
+        dataSet["fileNames"].append(imageFileName)
+    
+    dataSet.pop('images')
+    return pd.DataFrame(dataSet)
+
+
+def augment(dataSet: dict, n: int, workingDir: str = WORKING_DIR, imgSize: tuple = ((32, 32))) -> dict:
+        
+        # prepare augmented directory path by class
+        augDir = os.path.join(workingDir, 'aug')
+        try:
+            os.mkdir(augDir)
+        except (FileExistsError):
+            print("Dir: {} already exists".format(augDir))
+        for label in dataSet['labels'].unique():    
+            labelDirPath = os.path.join(augDir, str(label)) 
+            try:   
+                os.mkdir(labelDirPath)
+            except (FileExistsError):
+                print("Dir: {} already exists".format(labelDirPath))
+        # create and store the augmented images  
+        total=0
+        dataGenerator=ImageDataGenerator(rotation_range=20, 
+                             width_shift_range=0.1,
+                             height_shift_range=0.1, 
+                             shear_range=0.1, 
+                             zoom_range=0.08,
+                             horizontal_flip=False,
+                             fill_mode='nearest')
+        
+        groups=dataSet.groupby('labels')
+        for label in dataSet['labels'].unique():
+
+            # for every group count how many are currently in class
+            # if there are less than total desired count
+            # generate more by dataGenerator
+            group = groups.get_group(label) 
+            sampleCount=len(group) 
+
+            if (sampleCount < n): 
+                augmentedImageCount = 0
+
+                # Number of images to create
+                delta = n - sampleCount
+
+                targetDir = os.path.join(augDir, str(label))
+                msg = '{0:40s} for class {1:^30s} creating {2:^5s} augmented images'.format(' ', str(label), str(delta))
+                print(msg, '\r', end='') 
+
+                aug_gen=dataGenerator.flow_from_dataframe(group, directory=WORKING_DIR, x_col='fileNames', y_col="label", target_size=imgSize,
+                                                class_mode=None, batch_size=1, shuffle=False, 
+                                                save_to_dir=targetDir, save_prefix='aug-', color_mode='rgb',
+                                                save_format='jpg')
+                while augmentedImageCount < delta:
+                    images=next(aug_gen)            
+                    augmentedImageCount += len(images)
+                total +=augmentedImageCount
+        print('Total Augmented images created= ', total)
+        # create aug_df and merge with train_df to create composite training set ndf
+        aug_fpaths=[]
+        aug_labels=[]
+        classlist=os.listdir(augDir)
+        for klass in classlist:
+            classpath=os.path.join(augDir, klass)     
+            flist=os.listdir(classpath)    
+            for f in flist:        
+                fpath=os.path.join(classpath,f)         
+                aug_fpaths.append(fpath)
+                aug_labels.append(klass)
+        filenames=pd.Series(aug_fpaths, name='filenames')
+        labels=pd.Series(aug_labels, name='labels')
+        aug_df=pd.concat([filenames, labels])         
+        dataSet=pd.concat([dataSet,aug_df]).reset_index(drop=True)        
+        return dataSet 
+
+#def balanceDataSet(dataSet, samplesCount, dir, img_size = ((32, 32))):
+
+
+
+def trainModel(inputFile):
+    WORKING_DIR = os.path.dirname(inputFile)
+    db = openDB(inputFile)
+    data = readDB(db)
+
+    df = organaizeData(data, WORKING_DIR)
+    augment(df, 8000, WORKING_DIR)
+
+    findMaxLabel(lables)
+    history = []
+    with sess.as_default():
+        trainX, testX, trainY, testY, aug = prepareTrainData(augmentedData, lables)
+        K.set_image_data_format('channels_last')
+        model = create_model()
+        model.summary()
+        callback_list = prepareModelParams(model)
+        history = runModel(model, trainX, trainY, testX, testY, callback_list)
+    sess.close()
+    summarizeModel(history)
+    print("yalla!")
 
 '''
 Data Augmentation section
@@ -169,7 +255,7 @@ def convertToGray(pil_im):
     #grayImage = grayImage.resize(36, 36)
     return grayImage
 
-def sharpen_image(pil_im):
+def sharpenImage(pil_im):
     #Adding Blur to image
     enhancer = PIL.ImageEnhance.Sharpness(pil_im)
     image_sharp = enhancer.enhance(2) 
@@ -347,36 +433,6 @@ def findMaxLabel(labels):
             counter = labels.count(i)
     print("{} label is found max: {}".format(maxLabel, counter))
     return maxLabel, counter
-
-def getListOfImagesToAugment(images, labels, excludeLabel):
-    startAt  = -1
-    locations = [[]]
-    while True:
-        try:
-            loc = seq.index(item,start_at+1)
-        except ValueError:
-            break
-        else:
-            locs.append(loc)
-            start_at = loc
-    return locs
-
-def trainModel(inputFile):
-    db = openDB(inputFile)
-    data = readDB(db)
-    augmentedData, lables = organaizeAndAugment(data)
-    findMaxLabel(lables)
-    history = []
-    with sess.as_default():
-        trainX, testX, trainY, testY, aug = prepareTrainData(augmentedData, lables)
-        K.set_image_data_format('channels_last')
-        model = create_model()
-        model.summary()
-        callback_list = prepareModelParams(model)
-        history = runModel(model, trainX, trainY, testX, testY, callback_list)
-    sess.close()
-    summarizeModel(history)
-    print("yalla!")
 
 def isValidFile(parser, arg):
     arg = arg.lstrip()
