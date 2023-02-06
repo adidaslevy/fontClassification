@@ -6,6 +6,7 @@ import pickle
 import numpy as np
 import PIL
 import matplotlib.pyplot as plt
+from imgaug import augmenters as iaa
 import cv2
 import scipy
 import itertools
@@ -112,15 +113,17 @@ Organize and augment data
 '''
 def organaizeData(data: ImageProperties, workingDir: str):
     counter=0
-    dataSet = {"images": [], "fileNames": [], "labels": []}
+    if (os.path.exists(os.path.join(WORKING_DIR, 'dataset'))):
+        return
+    dataSet = {"images": [], "filenames": [], "labels": []}
     
     for image in data:
         for i in range(len(image.charImages)):
             label = image.fonts[i]
-            label = conv_label(label)
+            #label = conv_label(label)
             pilImage = []
             try:
-                pilImage = sharpenImage(openImage(image.charImages[i]))
+                pilImage = openImage(image.charImages[i])
             except:
                 continue
             # Adding original image
@@ -134,39 +137,55 @@ def organaizeData(data: ImageProperties, workingDir: str):
         os.mkdir(datasetDir)
     except (FileExistsError):
         print("Dir: {} already exists".format(datasetDir))
+    labelsSet = set(dataSet['labels'])
+    for label in labelsSet:    
+        labelDirPath = os.path.join(datasetDir, str(label)) 
+        try:   
+            os.mkdir(labelDirPath)
+        except (FileExistsError):
+            print("Dir: {} already exists".format(labelDirPath))
     for image, label in zip(dataSet['images'], dataSet['labels']):
-        fileName = "img_" + str(label) + "_" + str(uuid.uuid4()) + ".jpg"
-        imageFileName = os.path.join(datasetDir, fileName)
+        fileName = "img_" + str(uuid.uuid4()) + ".jpg"
+        labelDir = os.path.join(datasetDir, str(label))
+        imageFileName = os.path.join(labelDir, fileName)
         image.save(imageFileName)
-        dataSet["fileNames"].append(imageFileName)
+        dataSet["filenames"].append(imageFileName)
     
     dataSet.pop('images')
     return pd.DataFrame(dataSet)
 
 
 def augment(dataSet: dict, n: int, workingDir: str = WORKING_DIR, imgSize: tuple = ((32, 32))) -> dict:
-        
-        # prepare augmented directory path by class
-        augDir = os.path.join(workingDir, 'aug')
-        try:
-            os.mkdir(augDir)
-        except (FileExistsError):
-            print("Dir: {} already exists".format(augDir))
-        for label in dataSet['labels'].unique():    
-            labelDirPath = os.path.join(augDir, str(label)) 
-            try:   
-                os.mkdir(labelDirPath)
-            except (FileExistsError):
-                print("Dir: {} already exists".format(labelDirPath))
+        datasetDir = os.path.join(workingDir, 'dataset')
         # create and store the augmented images  
         total=0
-        dataGenerator=ImageDataGenerator(rotation_range=20, 
-                             width_shift_range=0.1,
-                             height_shift_range=0.1, 
-                             shear_range=0.1, 
-                             zoom_range=0.08,
-                             horizontal_flip=False,
-                             fill_mode='nearest')
+        sometimes = lambda aug: iaa.Sometimes(0.5, aug)
+        seq = iaa.Sequential([
+            # Small gaussian blur with random sigma between 0 and 0.5.
+            # But we only blur about 50% of all images.
+                sometimes(iaa.Affine(
+                scale={"x": (0.8, 1.2), "y": (0.8, 1.2)}, # scale images to 80-120% of their size, individually per axis
+                translate_percent={"x": (-0.2, 0.2), "y": (-0.2, 0.2)}, # translate by -20 to +20 percent (per axis)
+                rotate=(-45, 45), # rotate by -45 to +45 degrees
+                shear=(-16, 16), # shear by -16 to +16 degrees
+                order=[0, 1], # use nearest neighbour or bilinear interpolation (fast)
+                cval=(0, 255) # if mode is constant, use a cval between 0 and 255
+            )),
+            iaa.SomeOf((0, 3),
+                [
+                    # Strengthen or weaken the contrast in each image.
+                    iaa.LinearContrast((0.75, 1.5)),
+                    sometimes(iaa.OneOf([
+                        iaa.EdgeDetect(alpha=(0, 0.7)),
+                        iaa.DirectedEdgeDetect(
+                            alpha=(0, 0.7), direction=(0.0, 1.0)
+                    ),])),
+                    #iaa.AdditiveGaussianNoise(loc=0, scale=(0.0, 0.05*255), per_channel=0.5),
+                    iaa.Multiply((0.8, 1.2), per_channel=0.2),
+                ])
+        ], random_order=True)
+        
+        dataGenerator=ImageDataGenerator(preprocessing_function=seq.augment_image)
         
         groups=dataSet.groupby('labels')
         for label in dataSet['labels'].unique():
@@ -182,59 +201,40 @@ def augment(dataSet: dict, n: int, workingDir: str = WORKING_DIR, imgSize: tuple
 
                 # Number of images to create
                 delta = n - sampleCount
-
-                targetDir = os.path.join(augDir, str(label))
+                targetDir = os.path.join(datasetDir, str(label))
                 msg = '{0:40s} for class {1:^30s} creating {2:^5s} augmented images'.format(' ', str(label), str(delta))
                 print(msg, '\r', end='') 
 
-                aug_gen=dataGenerator.flow_from_dataframe(group, directory=WORKING_DIR, x_col='fileNames', y_col="label", target_size=imgSize,
+                aug_gen=dataGenerator.flow_from_dataframe(group, directory=WORKING_DIR, x_col='filenames', y_col="label", target_size=imgSize,
                                                 class_mode=None, batch_size=1, shuffle=False, 
-                                                save_to_dir=targetDir, save_prefix='aug-', color_mode='rgb',
+                                                save_to_dir=targetDir, save_prefix='aug-', color_mode='grayscale',
                                                 save_format='jpg')
                 while augmentedImageCount < delta:
                     images=next(aug_gen)            
                     augmentedImageCount += len(images)
                 total +=augmentedImageCount
         print('Total Augmented images created= ', total)
-        # create aug_df and merge with train_df to create composite training set ndf
-        aug_fpaths=[]
-        aug_labels=[]
-        classlist=os.listdir(augDir)
-        for klass in classlist:
-            classpath=os.path.join(augDir, klass)     
-            flist=os.listdir(classpath)    
-            for f in flist:        
-                fpath=os.path.join(classpath,f)         
-                aug_fpaths.append(fpath)
-                aug_labels.append(klass)
-        filenames=pd.Series(aug_fpaths, name='filenames')
-        labels=pd.Series(aug_labels, name='labels')
-        aug_df=pd.concat([filenames, labels])         
-        dataSet=pd.concat([dataSet,aug_df]).reset_index(drop=True)        
-        return dataSet 
 
-#def balanceDataSet(dataSet, samplesCount, dir, img_size = ((32, 32))):
 
 
 
 def trainModel(inputFile):
     WORKING_DIR = os.path.dirname(inputFile)
-    db = openDB(inputFile)
-    data = readDB(db)
+    if (not os.path.exists(os.path.join(WORKING_DIR, 'dataset'))):
+        db = openDB(inputFile)
+        data = readDB(db)
+        df = organaizeData(data, WORKING_DIR)
+        augment(df, 8000, WORKING_DIR)
 
-    df = organaizeData(data, WORKING_DIR)
-    augment(df, 8000, WORKING_DIR)
-
-    findMaxLabel(lables)
     history = []
-    with sess.as_default():
-        trainX, testX, trainY, testY, aug = prepareTrainData(augmentedData, lables)
-        K.set_image_data_format('channels_last')
-        model = create_model()
-        model.summary()
-        callback_list = prepareModelParams(model)
-        history = runModel(model, trainX, trainY, testX, testY, callback_list)
-    sess.close()
+    #with sess.as_default(WORKING_DIR):
+    train_ds, val_ds = prepareTrainData(WORKING_DIR)
+    K.set_image_data_format('channels_last')
+    model = ResNet34()
+    model.summary()
+    callback_list = prepareModelParams(model)
+    history = runModel(model, train_ds, val_ds, callback_list)
+    #sess.close()
     summarizeModel(history)
     print("yalla!")
 
@@ -258,7 +258,7 @@ def convertToGray(pil_im):
 def sharpenImage(pil_im):
     #Adding Blur to image
     enhancer = PIL.ImageEnhance.Sharpness(pil_im)
-    image_sharp = enhancer.enhance(2) 
+    image_sharp = enhancer.enhance(3) 
     return image_sharp
 
 def affine_rotation(img):
@@ -280,6 +280,71 @@ def gradient_fill(image):
 '''
 Model
 '''
+def convolutional_block(x, filter):
+    # copy tensor to variable called x_skip
+    x_skip = x
+    # Layer 1
+    x = tf.keras.layers.Conv2D(filter, (3,3), padding = 'same', strides = (2,2))(x)
+    x = tf.keras.layers.BatchNormalization(axis=3)(x)
+    x = tf.keras.layers.Activation('relu')(x)
+    # Layer 2
+    x = tf.keras.layers.Conv2D(filter, (3,3), padding = 'same')(x)
+    x = tf.keras.layers.BatchNormalization(axis=3)(x)
+    # Processing Residue with conv(1,1)
+    x_skip = tf.keras.layers.Conv2D(filter, (1,1), strides = (2,2))(x_skip)
+    # Add Residue
+    x = tf.keras.layers.Add()([x, x_skip])     
+    x = tf.keras.layers.Activation('relu')(x)
+    return x
+
+def identity_block(x, filter):
+    # copy tensor to variable called x_skip
+    x_skip = x
+    # Layer 1
+    x = tf.keras.layers.Conv2D(filter, (3,3), padding = 'same')(x)
+    x = tf.keras.layers.BatchNormalization(axis=3)(x)
+    x = tf.keras.layers.Activation('relu')(x)
+    # Layer 2
+    x = tf.keras.layers.Conv2D(filter, (3,3), padding = 'same')(x)
+    x = tf.keras.layers.BatchNormalization(axis=3)(x)
+    # Add Residue
+    x = tf.keras.layers.Add()([x, x_skip])     
+    x = tf.keras.layers.Activation('relu')(x)
+    return x
+
+def ResNet34(shape = (32, 32, 1), classes = 10):
+    # Step 1 (Setup Input Layer)
+    x_input = tf.keras.layers.Input(shape)
+    x = tf.keras.layers.ZeroPadding2D((3, 3))(x_input)
+    # Step 2 (Initial Conv layer along with maxPool)
+    x = tf.keras.layers.Conv2D(64, kernel_size=7, strides=2, padding='same')(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.Activation('relu')(x)
+    x = tf.keras.layers.MaxPool2D(pool_size=3, strides=2, padding='same')(x)
+    # Define size of sub-blocks and initial filter size
+    block_layers = [3, 4, 6, 3]
+    filter_size = 64
+    # Step 3 Add the Resnet Blocks
+    for i in range(4):
+        if i == 0:
+            # For sub-block 1 Residual/Convolutional block not needed
+            for j in range(block_layers[i]):
+                x = identity_block(x, filter_size)
+        else:
+            # One Residual/Convolutional Block followed by Identity blocks
+            # The filter size will go on increasing by a factor of 2
+            filter_size = filter_size*2
+            x = convolutional_block(x, filter_size)
+            for j in range(block_layers[i] - 1):
+                x = identity_block(x, filter_size)
+    # Step 4 End Dense Network
+    x = tf.keras.layers.AveragePooling2D((2,2), padding = 'same')(x)
+    x = tf.keras.layers.Flatten()(x)
+    x = tf.keras.layers.Dense(512, activation = 'relu')(x)
+    x = tf.keras.layers.Dense(5, activation = 'softmax')(x)
+    model = tf.keras.models.Model(inputs = x_input, outputs = x, name = "ResNet34")
+    return model
+
 def create_model():
     model = Sequential()
     #conv_inputs = Input(shape=(32, 32, 1)) # 32 # 64 
@@ -302,7 +367,7 @@ def create_model():
     model.add(Dense(256, activation='relu'))
     model.add(BatchNormalization())
     model.add(Dense(128, activation='relu'))
-    model.add(Dense(5, activation='softmax', name='class'))
+    model.add(Dense(5, activation='softmax'))
 
     #model = keras.Model(inputs=conv_inputs, outputs=conv_outputs)
     '''
@@ -349,42 +414,54 @@ def create_model():
     '''
     return model
 
-def prepareTrainData(data, labels):
-    data = np.asarray(data, dtype="float") / 255.0
-    labels = np.array(labels)
-    print("Success")
-
-    (trainX, testX, trainY, testY) = train_test_split(data,
-        labels, test_size=0.25, random_state=42)
-    trainY = to_categorical(trainY, num_classes=5)
-    testY = to_categorical(testY, num_classes=5)
-    aug = ImageDataGenerator(rotation_range=20, 
-                             width_shift_range=0.1,
-                             height_shift_range=0.1, 
-                             shear_range=0.1, 
-                             zoom_range=0.08,
-                             horizontal_flip=False,
-                             fill_mode='nearest')
-    return trainX, testX, trainY, testY, aug
+def prepareTrainData(workingDir: str):
+    # load data and from HD
+    train_ds = tf.keras.utils.image_dataset_from_directory(
+        os.path.join(workingDir, 'dataset'),
+        validation_split=0.25,
+        subset="training",
+        color_mode='grayscale',
+        label_mode='categorical',
+        seed=42,
+        shuffle=True,
+        image_size=(32, 32),
+        batch_size=BATCH_SIZE)
+    
+    val_ds = tf.keras.utils.image_dataset_from_directory(
+        os.path.join(workingDir, 'dataset'),
+        validation_split=0.25,
+        subset="validation",
+        color_mode='grayscale',
+        label_mode='categorical',
+        seed=42,
+        shuffle=True,
+        image_size=(32, 32),
+        batch_size=BATCH_SIZE)
+    
+    AUTOTUNE = tf.data.AUTOTUNE
+    train_ds = train_ds.cache().prefetch(buffer_size=AUTOTUNE)
+    val_ds = val_ds.cache().prefetch(buffer_size=AUTOTUNE)
+    return train_ds, val_ds
 
 def prepareModelParams(model):
-    sgd = tf.keras.optimizers.SGD(learning_rate=0.01, decay=1e-6, momentum=0.9, nesterov=True)
-    model.compile(loss=keras.losses.CategoricalCrossentropy(from_logits=False, label_smoothing=0.1), optimizer=sgd, metrics=['accuracy'])
-    early_stopping=callbacks.EarlyStopping(monitor='val_loss', min_delta=0, patience=10, verbose=0, mode='min')
+    sgd = tf.keras.optimizers.SGD(learning_rate=0.01, decay=1e-6, momentum=0.8)
+    model.compile(loss=keras.losses.CategoricalCrossentropy(from_logits=False), 
+                  optimizer=sgd, metrics=['accuracy'])
+    early_stopping=callbacks.EarlyStopping(monitor='val_loss', min_delta=0, patience=20, verbose=0, mode='min')
 
-    filepath=os.path.join(BASE_PATH, "top_model.h5")
+    filepath=os.path.join(WORKING_DIR, "top_model.h5")
 
     checkpoint = callbacks.ModelCheckpoint(filepath, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
     callbacks_list = [early_stopping, checkpoint]
     return callbacks_list
 
-def runModel(model, trainX, trainY, testX, testY, callbacks_list):
-    history = model.fit(trainX, trainY,shuffle=True,
+def runModel(model, train_ds, val_ds, callbacks_list):
+    history = model.fit(train_ds, shuffle=True,
         batch_size=BATCH_SIZE,
         epochs=EPOCHS,
         verbose=1,
-        validation_data=(testX, testY),callbacks=callbacks_list)
-    score = model.evaluate(testX, testY, verbose=1)
+        validation_data=val_ds,callbacks=callbacks_list)
+    score = model.evaluate(val_ds, verbose=1)
     print('Test loss:', score[0])
     print('Test accuracy:', score[1])
     return history
