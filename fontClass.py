@@ -1,5 +1,6 @@
 import argparse
 from argparse import ArgumentParser
+from cmath import exp
 import pandas as pd
 import h5py
 import pickle
@@ -35,7 +36,9 @@ LABELS_PICKLE = "labels.pickle"
 WORKING_DIR = ""
 
 BATCH_SIZE = 128
-EPOCHS = 20
+IMAGE_LENGTH = 32
+IMAGE_WIDTH = 32
+EPOCHS = 50
 
 # Assume that you have 12GB of GPU memory and want to allocate ~4GB:
 gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=0.8)
@@ -62,13 +65,7 @@ def openDB(dbPath):
     db = h5py.File(dbPath, 'r')
     return db
 
-'''
-Convert image to pil image, and resize to 36 * 36
-'''
-def openImage(img):
-    im =PIL.Image.fromarray(np.uint8(img * 255)).convert('L')
-    outImage = im.resize((32, 32))
-    return outImage
+
 
 '''
 Return a tuple of arrays in the following form:
@@ -107,6 +104,14 @@ def conv_label(label):
         return 3
     elif label == b'Titillium Web':
         return 4
+
+
+def openImage(img):
+    im =PIL.Image.fromarray(img)
+    sharpImage = sharpenImage(im)
+    outImage = sharpImage.resize((IMAGE_LENGTH, IMAGE_WIDTH), resample=PIL.Image.BICUBIC).convert('L')
+    return outImage
+
 
 '''
 Organize and augment data
@@ -154,39 +159,27 @@ def organaizeData(data: ImageProperties, workingDir: str):
     dataSet.pop('images')
     return pd.DataFrame(dataSet)
 
+'''
+Augmentation methods
+'''
+def sharpenImage(pil_im):
+    #Sharpen Image
+    enhancer = PIL.ImageEnhance.Sharpness(pil_im)
+    image_sharp = enhancer.enhance(2) 
+    return image_sharp
 
-def augment(dataSet: dict, n: int, workingDir: str = WORKING_DIR, imgSize: tuple = ((32, 32))) -> dict:
+def augment(dataSet: dict, n: int, workingDir: str = WORKING_DIR, imgSize: tuple = ((IMAGE_LENGTH, IMAGE_WIDTH))) -> dict:
         datasetDir = os.path.join(workingDir, 'dataset')
         # create and store the augmented images  
         total=0
-        sometimes = lambda aug: iaa.Sometimes(0.5, aug)
-        seq = iaa.Sequential([
-            # Small gaussian blur with random sigma between 0 and 0.5.
-            # But we only blur about 50% of all images.
-                sometimes(iaa.Affine(
-                scale={"x": (0.8, 1.2), "y": (0.8, 1.2)}, # scale images to 80-120% of their size, individually per axis
-                translate_percent={"x": (-0.2, 0.2), "y": (-0.2, 0.2)}, # translate by -20 to +20 percent (per axis)
-                rotate=(-45, 45), # rotate by -45 to +45 degrees
-                shear=(-16, 16), # shear by -16 to +16 degrees
-                order=[0, 1], # use nearest neighbour or bilinear interpolation (fast)
-                cval=(0, 255) # if mode is constant, use a cval between 0 and 255
-            )),
-            iaa.SomeOf((0, 3),
-                [
-                    # Strengthen or weaken the contrast in each image.
-                    iaa.LinearContrast((0.75, 1.5)),
-                    sometimes(iaa.OneOf([
-                        iaa.EdgeDetect(alpha=(0, 0.7)),
-                        iaa.DirectedEdgeDetect(
-                            alpha=(0, 0.7), direction=(0.0, 1.0)
-                    ),])),
-                    #iaa.AdditiveGaussianNoise(loc=0, scale=(0.0, 0.05*255), per_channel=0.5),
-                    iaa.Multiply((0.8, 1.2), per_channel=0.2),
-                ])
-        ], random_order=True)
-        
-        dataGenerator=ImageDataGenerator(preprocessing_function=seq.augment_image)
-        
+        dataGenerator=ImageDataGenerator(rotation_range=20, 
+                             width_shift_range=0.2,
+                             height_shift_range=0.2, 
+                             shear_range=0.1, 
+                             zoom_range=0.08,
+                             horizontal_flip=False,
+                             fill_mode='nearest')
+         
         groups=dataSet.groupby('labels')
         for label in dataSet['labels'].unique():
 
@@ -206,7 +199,7 @@ def augment(dataSet: dict, n: int, workingDir: str = WORKING_DIR, imgSize: tuple
                 print(msg, '\r', end='') 
 
                 aug_gen=dataGenerator.flow_from_dataframe(group, directory=WORKING_DIR, x_col='filenames', y_col="label", target_size=imgSize,
-                                                class_mode=None, batch_size=1, shuffle=False, 
+                                                class_mode=None, batch_size=1, shuffle=True, seed = 42, 
                                                 save_to_dir=targetDir, save_prefix='aug-', color_mode='grayscale',
                                                 save_format='jpg')
                 while augmentedImageCount < delta:
@@ -214,9 +207,6 @@ def augment(dataSet: dict, n: int, workingDir: str = WORKING_DIR, imgSize: tuple
                     augmentedImageCount += len(images)
                 total +=augmentedImageCount
         print('Total Augmented images created= ', total)
-
-
-
 
 def trainModel(inputFile):
     WORKING_DIR = os.path.dirname(inputFile)
@@ -230,52 +220,13 @@ def trainModel(inputFile):
     #with sess.as_default(WORKING_DIR):
     train_ds, val_ds = prepareTrainData(WORKING_DIR)
     K.set_image_data_format('channels_last')
-    model = ResNet34()
+    model = create_model()
     model.summary()
-    callback_list = prepareModelParams(model)
+    callback_list = prepareModelParams(model, train_ds)
     history = runModel(model, train_ds, val_ds, callback_list)
     #sess.close()
     summarizeModel(history)
     print("yalla!")
-
-'''
-Data Augmentation section
-'''
-def noise_image(pil_im):
-    # Adding Noise to image
-    img_array = np.asarray(pil_im)
-    mean = 0.0   # some constant
-    std = 5   # some constant (standard deviation)
-    noisy_img = img_array + np.random.normal(mean, std, img_array.shape)
-    noisy_img_clipped = np.clip(noisy_img, 0, 255)
-    return noisy_img_clipped
-
-def convertToGray(pil_im):
-    grayImage = cv2.cvtColor(pil_im, cv2.COLOR_BGR2GRAY)
-    #grayImage = grayImage.resize(36, 36)
-    return grayImage
-
-def sharpenImage(pil_im):
-    #Adding Blur to image
-    enhancer = PIL.ImageEnhance.Sharpness(pil_im)
-    image_sharp = enhancer.enhance(3) 
-    return image_sharp
-
-def affine_rotation(img):
-    rows, columns, mat = img.shape
-
-    point1 = np.float32([[10, 10], [30, 10], [10, 30]])
-    point2 = np.float32([[20, 15], [40, 10], [20, 40]])
-
-    A = cv2.getAffineTransform(point1, point2)
-
-    output = cv2.warpAffine(img, A, (columns, rows))
-    return output
-
-def gradient_fill(image):
-    laplacian = cv2.Laplacian(image,cv2.CV_64F)
-    laplacian = cv2.resize(laplacian, (105, 105))
-    return laplacian
 
 '''
 Model
@@ -347,11 +298,11 @@ def ResNet34(shape = (32, 32, 1), classes = 10):
 
 def create_model():
     model = Sequential()
-    #conv_inputs = Input(shape=(32, 32, 1)) # 32 # 64 
-    model.add(Conv2D(32, (3, 3), activation='relu', padding='same', input_shape=(32, 32, 1)))
-    model.add(Conv2D(64, kernel_size=(3, 3), activation='relu', padding='same')) #128 # 64
+    model.add(Conv2D(32, (3, 3), activation='relu', padding='same', input_shape=(IMAGE_LENGTH, IMAGE_WIDTH, 1)))
+    model.add(Conv2D(64, kernel_size=(3, 3), activation='relu', padding='same')) 
     model.add(BatchNormalization())
     model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Dropout(0.1))
 
     model.add(Conv2D(128, kernel_size=(3, 3), activation='relu', padding='same'))
     model.add(BatchNormalization())
@@ -361,13 +312,15 @@ def create_model():
     model.add(Conv2D(256, kernel_size=(3, 3), activation='relu'))
     model.add(BatchNormalization())
     model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Dropout(0.1))
 
     model.add(Flatten(name='flatten'))
-
     model.add(Dense(256, activation='relu'))
     model.add(BatchNormalization())
+    
     model.add(Dense(128, activation='relu'))
     model.add(Dense(5, activation='softmax'))
+
 
     #model = keras.Model(inputs=conv_inputs, outputs=conv_outputs)
     '''
@@ -424,7 +377,7 @@ def prepareTrainData(workingDir: str):
         label_mode='categorical',
         seed=42,
         shuffle=True,
-        image_size=(32, 32),
+        image_size=(IMAGE_LENGTH, IMAGE_WIDTH),
         batch_size=BATCH_SIZE)
     
     val_ds = tf.keras.utils.image_dataset_from_directory(
@@ -435,7 +388,7 @@ def prepareTrainData(workingDir: str):
         label_mode='categorical',
         seed=42,
         shuffle=True,
-        image_size=(32, 32),
+        image_size=(IMAGE_LENGTH, IMAGE_WIDTH),
         batch_size=BATCH_SIZE)
     
     AUTOTUNE = tf.data.AUTOTUNE
@@ -443,16 +396,25 @@ def prepareTrainData(workingDir: str):
     val_ds = val_ds.cache().prefetch(buffer_size=AUTOTUNE)
     return train_ds, val_ds
 
-def prepareModelParams(model):
-    sgd = tf.keras.optimizers.SGD(learning_rate=0.01, decay=1e-6, momentum=0.8)
+def exp_decay(epoch):
+   initial_lrate = 0.01
+   k = 0.1
+   lrate = initial_lrate * tf.math.exp(-k*epoch)
+   return lrate
+    
+def prepareModelParams(model, train_ds):
+    lr = 0.1
+    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(lr, decay_steps=400, decay_rate=0.98, staircase=True)
+
+    sgd = tf.keras.optimizers.SGD(learning_rate=lr)
     model.compile(loss=keras.losses.CategoricalCrossentropy(from_logits=False), 
                   optimizer=sgd, metrics=['accuracy'])
     early_stopping=callbacks.EarlyStopping(monitor='val_loss', min_delta=0, patience=20, verbose=0, mode='min')
-
+    learningRateScheduler = callbacks.LearningRateScheduler(exp_decay)
     filepath=os.path.join(WORKING_DIR, "top_model.h5")
 
     checkpoint = callbacks.ModelCheckpoint(filepath, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
-    callbacks_list = [early_stopping, checkpoint]
+    callbacks_list = [early_stopping, checkpoint, learningRateScheduler]
     return callbacks_list
 
 def runModel(model, train_ds, val_ds, callbacks_list):
