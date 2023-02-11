@@ -18,7 +18,7 @@ class TestData:
 
 class TrainData(TestData):
     def __init__(self, name, image, fonts, text, charsBB):
-        super().__init__(name, image, fonts, text, charsBB)
+        super().__init__(name, image, text, charsBB)
         self.fonts = fonts
 
 class WorkMode(Enum):

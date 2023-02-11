@@ -37,13 +37,14 @@ import os.path
 AUGMENTED_DATA_PICKLE = "augmentedData.pickle"
 LABELS_PICKLE = "labels.pickle"
 WORKING_DIR = ""
+MODEL_PATH = "classificationModel"
 
 BATCH_SIZE = 128
 IMAGE_LENGTH = 32
 IMAGE_WIDTH = 32
-EPOCHS = 100
-BALANCE_AMOUNT = 50000
-LEARNING_RATE = 1e-3
+EPOCHS = 50
+BALANCE_AMOUNT = 25000
+LEARNING_RATE = 1e-4
 
 # Assume that you have 12GB of GPU memory and want to allocate ~4GB:
 gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=0.8)
@@ -57,16 +58,15 @@ def openDB(dbPath):
 Return a tuple of arrays in the following form:
 imageName, image, fonts for that image, words
 '''
-def readDB(db, mode = dataManagement.WorkMode.Train):
+def readDB(db, mode = dataManagement.WorkMode.Train) -> dataManagement.TestData:
     data = []
     imageNames = sorted(db['data'].keys())
     for i in imageNames:
         name = i
         image = db['data'][i][...]
         charBB = db['data'][i].attrs['charBB']
-        fonts = db['data'][i].attrs['font']
+        fonts = db['data'][i].attrs['font'] if (mode == dataManagement.WorkMode.Train) else None
         text = db['data'][i].attrs['txt']
-        image = []
         if (mode == dataManagement.WorkMode.Train):
             image = dataManagement.TrainData(name, image, fonts, text, charBB)
         else:
@@ -85,15 +85,19 @@ def openImage(img):
 '''
 Organize and augment data
 '''
-def organaizeData(data: dataManagement.TrainData, workingDir: str):
+def organaizeData(data: dataManagement.TrainData, workingDir: str, mode = WorkMode.Train):
     counter=0
-    if (os.path.exists(os.path.join(WORKING_DIR, 'dataset'))):
+    if (os.path.exists(os.path.join(WORKING_DIR, 
+                                    'dataset' if (mode == WorkMode.Train) else 'datatest'))):
         return
-    dataSet = {"images": [], "filenames": [], "labels": []}
-    
+    if (mode == WorkMode.Train):
+        dataSet = {"images": [], "filenames": [], "labels": []}
+    else: 
+        dataSet = {"images": [], "filenames": []}
+
     for image in data:
         for i in range(len(image.charImages)):
-            label = image.fonts[i]
+            label = image.fonts[i] if (mode == WorkMode.Train) else None
             #label = conv_label(label)
             pilImage = []
             try:
@@ -101,30 +105,42 @@ def organaizeData(data: dataManagement.TrainData, workingDir: str):
             except:
                 continue
             # Adding original image
-            origImg = img_to_array(pilImage)
             dataSet['images'].append(pilImage)
-            dataSet['labels'].append(label)
-    
+            if (mode == WorkMode.Train):
+                dataSet['labels'].append(label)
+        counter += 1
+        if (counter == 20):
+            break
     # save char images in dataset dir
-    datasetDir = os.path.join(workingDir, 'dataset')
+    datasetDir = os.path.join(workingDir, 'dataset' if (mode == WorkMode.Train) else 'datatest')
     try:
         os.mkdir(datasetDir)
     except (FileExistsError):
         print("Dir: {} already exists".format(datasetDir))
-    labelsSet = set(dataSet['labels'])
-    for label in labelsSet:    
-        labelDirPath = os.path.join(datasetDir, str(label)) 
-        try:   
-            os.mkdir(labelDirPath)
-        except (FileExistsError):
-            print("Dir: {} already exists".format(labelDirPath))
-    for image, label in zip(dataSet['images'], dataSet['labels']):
-        fileName = "img_" + str(uuid.uuid4()) + ".jpg"
-        labelDir = os.path.join(datasetDir, str(label))
-        imageFileName = os.path.join(labelDir, fileName)
-        image.save(imageFileName)
-        dataSet["filenames"].append(imageFileName)
     
+    if (mode == WorkMode.Train):
+        labelsSet = set(dataSet['labels'])
+        for label in labelsSet:    
+            labelDirPath = os.path.join(datasetDir, str(label)) 
+            try:   
+                os.mkdir(labelDirPath)
+            except (FileExistsError):
+                print("Dir: {} already exists".format(labelDirPath))
+
+    if (mode == WorkMode.Train):
+        for image, label in zip(dataSet['images'], dataSet['labels']):
+            fileName = "img_" + str(uuid.uuid4()) + ".jpg"
+            labelDir = os.path.join(datasetDir, str(label))
+            imageFileName = os.path.join(labelDir, fileName)
+            image.save(imageFileName)
+            dataSet["filenames"].append(imageFileName)
+    else:
+        for image in dataSet['images']:
+            fileName = "img_" + str(uuid.uuid4()) + ".jpg"
+            imageFileName = os.path.join(datasetDir, fileName)
+            image.save(imageFileName)
+            dataSet["filenames"].append(imageFileName)
+        
     dataSet.pop('images')
     return pd.DataFrame(dataSet)
 
@@ -191,12 +207,12 @@ def defineModel():
     model.add(Conv2D(128, kernel_size=(3, 3), activation='relu', padding='same'))
     model.add(BatchNormalization())
     model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.1))
+    model.add(Dropout(0.3))
 
     model.add(Conv2D(256, kernel_size=(3, 3), activation='relu'))
     model.add(BatchNormalization())
     model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.1))
+    model.add(Dropout(0.4))
 
     model.add(Flatten(name='flatten'))
     model.add(Dense(256, activation='relu'))
@@ -210,8 +226,9 @@ def prepareData(workingDir: str, mode: WorkMode, dataSplit: DataSplit):
     # load data and from HD
     dataSet = tf.keras.utils.image_dataset_from_directory(
         os.path.join(workingDir, 'dataset'),
-        validation_split = (mode == WorkMode.Train) if 0.25 else None,
-        subset = (mode == WorkMode.Train) if ((dataSplit == DataSplit.Train) if "training" else "validation") else None,
+        validation_split = 0.25 if (mode == WorkMode.Train) else None,
+        subset = "training" if (mode == WorkMode.Train and dataSplit == DataSplit.Train) 
+                                else "validation" if (mode == WorkMode.Train and dataSplit == DataSplit.Validation) else None,
         color_mode='grayscale',
         label_mode='categorical',
         seed=42,
@@ -224,9 +241,10 @@ def prepareData(workingDir: str, mode: WorkMode, dataSplit: DataSplit):
     return dataSet
     
 def prepareModelParams(model):
-    sgd = tf.keras.optimizers.SGD(learning_rate = LEARNING_RATE)
+    optimizer = tf.keras.optimizers.Adam(learning_rate = LEARNING_RATE)
+    #optimizer = tf.keras.optimizers.SGD(learning_rate = LEARNING_RATE)
     model.compile(loss=keras.losses.CategoricalCrossentropy(from_logits=False), 
-                  optimizer=sgd, metrics=['accuracy'])
+                  optimizer=optimizer, metrics=['accuracy'])
     early_stopping=callbacks.EarlyStopping(monitor='val_loss', min_delta=0, patience=20, verbose=0, mode='min')
     filepath=os.path.join(WORKING_DIR, "top_model.h5")
 
@@ -278,16 +296,50 @@ def trainModel(inputFile):
     model.summary()
     callback_list = prepareModelParams(model)
     history = runModel(model, train_ds, val_ds, callback_list)
-    model.save(os.path.join(WORKING_DIR, 'classificationModel'))
+    model.save(MODEL_PATH)
     #sess.close()
     summarizeModelTraining(history)
+
+'''
+########################################## TEST RELATED #############################
+'''
+
+'''
+This method fixes the predictions by the following assumption: 
+If more than half of the charachters of the word belong to the same label,
+Then all the word must be the same label. 
+'''
+def majorityWordVoting(predictions, data: dataManagement.TestData):
+    predIndex = 0
+    for image in data:
+        # extract text saved
+        for word in image.text:
+            wordLength = len(word)
+            
+    
+'''
+Font Conversion
+'''
+def convertPrediction(prediction):
+    if prediction == 0: return "Alex Brush"
+    if prediction == 1: return "Open Sans"
+    if prediction == 2: return "Sansation"
+    if prediction == 3: return "Ubuntu Mono"
+    if prediction == 4: return "Titillium Web"
 
 def testModel(inputFile, outputFile):
     WORKING_DIR = os.path.dirname(inputFile)
     db = openDB(inputFile)
-    data = readDB(db)
-    organaizeData(data, WORKING_DIR)
-    prepareData(WORKING_DIR, mode = WorkMode.Train, dataSplit = DataSplit.Train)
+    data = readDB(db, mode = WorkMode.Test)
+    organaizeData(data, WORKING_DIR, WorkMode.Test)
+    test_ds = prepareData(WORKING_DIR, mode = WorkMode.Train, dataSplit = DataSplit.Validation)
+    # Load Model
+    model = tf.keras.models.load_model(MODEL_PATH)
+    predictions = model.predict(test_ds)
+    fixedPredictions = [np.argmax(row) for row in predictions]
+    fixedPredictions = majorityWordVoting(fixedPredictions, data)
+    
+
 
 
 def main(argv):
@@ -303,7 +355,7 @@ def main(argv):
     group2 = parser.add_argument_group("group2")
     group2.add_argument("-p", action = 'store_true', help = "This option is used to predict model using h5 file as an input, and output a csv")
     group2._group_actions.append(iFile)
-    group2.add_argument("-o", type = argparse.FileType('w'), help = "Output csv file", dest="outputFile")
+    group2.add_argument("-o", help = "Output csv file", dest="outputFile")
                         
     args = parser.parse_args()
 

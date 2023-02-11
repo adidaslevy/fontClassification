@@ -1,0 +1,12 @@
+h5py==3.8.0
+imgaug==0.4.0
+keras==2.9.0
+matplotlib==3.6.3
+numpy==1.23.1
+opencv_python==4.7.0.68
+pandas==1.5.3
+Pillow==9.4.0
+scikit_learn==1.2.1
+scipy==1.10.0
+tensorflow==2.9.0
+tensorflow_gpu==2.9.3

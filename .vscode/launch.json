@@ -5,12 +5,21 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: Current File",
+            "name": "Python: train model",
             "type": "python",
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
             "args": ["-t", "-i /home/alevy/studies/computerVision/Project/SynthText_train.h5"],
+            "justMyCode": true
+        },
+        {
+            "name": "Python: test model",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": ["-p", "-i /home/alevy/studies/computerVision/Project/SynthText_train.h5", "-o /home/alevy/studies/computerVision/Project/result.csv"],
             "justMyCode": true
         }
     ]
