@@ -60,6 +60,7 @@ imageName, image, fonts for that image, words
 '''
 def readDB(db, mode = dataManagement.WorkMode.Train) -> dataManagement.TestData:
     data = []
+    counter = 0
     imageNames = sorted(db['data'].keys())
     for i in imageNames:
         name = i
@@ -72,6 +73,10 @@ def readDB(db, mode = dataManagement.WorkMode.Train) -> dataManagement.TestData:
         else:
             image = dataManagement.TestData(name, image, text, charBB)
         data.append(image)
+        if (mode == WorkMode.Test):
+            counter+=1
+            if counter == 20:
+                break
     return data
 
 
@@ -108,9 +113,6 @@ def organaizeData(data: dataManagement.TrainData, workingDir: str, mode = WorkMo
             dataSet['images'].append(pilImage)
             if (mode == WorkMode.Train):
                 dataSet['labels'].append(label)
-        counter += 1
-        if (counter == 20):
-            break
     # save char images in dataset dir
     datasetDir = os.path.join(workingDir, 'dataset' if (mode == WorkMode.Train) else 'datatest')
     try:
@@ -315,8 +317,43 @@ def majorityWordVoting(predictions, data: dataManagement.TestData):
         # extract text saved
         for word in image.text:
             wordLength = len(word)
-            
-    
+            # get the font predictions from predictions array
+            wordFonts = predictions[predIndex:predIndex + wordLength]
+            unique, counts = np.unique(wordFonts, return_counts=True)
+            maxCount = np.argmax(counts)
+            predictions[predIndex:predIndex + wordLength] = np.full(wordLength, unique[maxCount])
+            predIndex += wordLength
+    return predictions
+
+
+def writeOutputCSV(outputFilePath, data: dataManagement.TestData, predictions):
+    fontNames = ["Alex Brush", "Open Sans", "Sansation", "Ubuntu Mono", "Titillium Web"]
+    outputData = []
+    imageNameArray = []
+    charArrayResult = []
+    fontsResult = np.array([[]])
+    predIndex = 0
+    for image in data:
+        charArray = [char.replace(',', ",") if isinstance(char, str) else char for word in image.text for char in word.decode()]
+        charArrayResult = np.concatenate((charArrayResult, charArray))
+        imageNameArray = np.concatenate((imageNameArray, np.full(len(charArray), image.name)))
+        imageFonts = predictions[predIndex:predIndex + len(charArray)]
+        fontsPerChar = np.full((len(imageFonts), 5), 0)
+        for i in range(len(imageFonts)):
+            fontsPerChar[i, imageFonts[i]] = np.full(1, 1)
+        predIndex += len(charArray)
+        if (fontsResult.size == 0):
+            fontsResult = fontsPerChar
+        else:
+            fontsResult = np.concatenate((fontsResult, fontsPerChar), axis=0)
+    outputData = np.concatenate((np.array(charArrayResult).reshape(-1, 1), fontsResult), axis=1)
+    outputData = np.concatenate((np.array(imageNameArray).reshape(-1, 1), outputData), axis=1)
+
+    # Write actual csv 
+    header = np.concatenate((['image', 'char'], fontNames))
+    result = np.vstack((header, outputData))
+    np.savetxt(outputFilePath, result, delimiter=',', fmt='%s')
+
 '''
 Font Conversion
 '''
@@ -338,6 +375,7 @@ def testModel(inputFile, outputFile):
     predictions = model.predict(test_ds)
     fixedPredictions = [np.argmax(row) for row in predictions]
     fixedPredictions = majorityWordVoting(fixedPredictions, data)
+    writeOutputCSV(outputFile, data, fixedPredictions)
     
 
 
