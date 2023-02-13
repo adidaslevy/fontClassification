@@ -1,20 +1,15 @@
-import argparse
 import dataManagement
 from dataManagement import WorkMode, DataSplit
-from utils import isValidFile
+from utils import isValidFile, IMAGE_LENGTH, IMAGE_WIDTH
 from argparse import ArgumentParser
 from cmath import exp
 import pandas as pd
 import h5py
-import pickle
+import csv
 import numpy as np
 import PIL
 import matplotlib.pyplot as plt
 from imgaug import augmenters as iaa
-import cv2
-import scipy
-import itertools
-import random
 import keras
 import os
 import sys
@@ -36,12 +31,10 @@ from tensorflow import keras
 import os.path
 AUGMENTED_DATA_PICKLE = "augmentedData.pickle"
 LABELS_PICKLE = "labels.pickle"
-WORKING_DIR = ""
+WORKING_DIR = os.getcwd()
 MODEL_PATH = "classificationModel"
 
 BATCH_SIZE = 128
-IMAGE_LENGTH = 32
-IMAGE_WIDTH = 32
 EPOCHS = 50
 BALANCE_AMOUNT = 25000
 LEARNING_RATE = 1e-4
@@ -60,7 +53,6 @@ imageName, image, fonts for that image, words
 '''
 def readDB(db, mode = dataManagement.WorkMode.Train) -> dataManagement.TestData:
     data = []
-    counter = 0
     imageNames = sorted(db['data'].keys())
     for i in imageNames:
         name = i
@@ -73,40 +65,28 @@ def readDB(db, mode = dataManagement.WorkMode.Train) -> dataManagement.TestData:
         else:
             image = dataManagement.TestData(name, image, text, charBB)
         data.append(image)
-        if (mode == WorkMode.Test):
-            counter+=1
-            if counter == 20:
-                break
     return data
-
-
-def openImage(img):
-    im =PIL.Image.fromarray(img)
-    sharpImage = sharpenImage(im)
-    outImage = sharpImage.resize((IMAGE_LENGTH, IMAGE_WIDTH), resample=PIL.Image.BICUBIC).convert('L')
-    return outImage
-
 
 '''
 Organize and augment data
 '''
 def organaizeData(data: dataManagement.TrainData, workingDir: str, mode = WorkMode.Train):
     counter=0
-    if (os.path.exists(os.path.join(WORKING_DIR, 
-                                    'dataset' if (mode == WorkMode.Train) else 'datatest'))):
+    if (os.path.exists(os.path.join(WORKING_DIR, 'dataset' if (mode == WorkMode.Train) else 'datatest'))):
         return
     if (mode == WorkMode.Train):
         dataSet = {"images": [], "filenames": [], "labels": []}
     else: 
         dataSet = {"images": [], "filenames": []}
 
+    counter = 0
     for image in data:
         for i in range(len(image.charImages)):
             label = image.fonts[i] if (mode == WorkMode.Train) else None
             #label = conv_label(label)
             pilImage = []
             try:
-                pilImage = openImage(image.charImages[i])
+                pilImage = image.charImages[i]
             except:
                 continue
             # Adding original image
@@ -149,11 +129,7 @@ def organaizeData(data: dataManagement.TrainData, workingDir: str, mode = WorkMo
 '''
 Augmentation methods
 '''
-def sharpenImage(pil_im):
-    #Sharpen Image
-    enhancer = PIL.ImageEnhance.Sharpness(pil_im)
-    image_sharp = enhancer.enhance(2) 
-    return image_sharp
+
 
 def augmentAndBalance(dataSet: dict, n: int, workingDir: str = WORKING_DIR, imgSize: tuple = ((IMAGE_LENGTH, IMAGE_WIDTH))) -> dict:
         datasetDir = os.path.join(workingDir, 'dataset')
@@ -227,12 +203,12 @@ def defineModel():
 def prepareData(workingDir: str, mode: WorkMode, dataSplit: DataSplit):
     # load data and from HD
     dataSet = tf.keras.utils.image_dataset_from_directory(
-        os.path.join(workingDir, 'dataset'),
-        validation_split = 0.25 if (mode == WorkMode.Train) else None,
+        os.path.join(workingDir, 'dataset' if (mode == WorkMode.Train) else 'datatest'),
+        validation_split = 0.1 if (mode == WorkMode.Train) else None,
         subset = "training" if (mode == WorkMode.Train and dataSplit == DataSplit.Train) 
                                 else "validation" if (mode == WorkMode.Train and dataSplit == DataSplit.Validation) else None,
         color_mode='grayscale',
-        label_mode='categorical',
+        label_mode='categorical' if (mode == WorkMode.Train) else None,
         seed=42,
         shuffle=True,
         image_size=(IMAGE_LENGTH, IMAGE_WIDTH),
@@ -284,7 +260,6 @@ def summarizeModelTraining(history):
 
 
 def trainModel(inputFile):
-    WORKING_DIR = os.path.dirname(inputFile)
     if (not os.path.exists(os.path.join(WORKING_DIR, 'dataset'))):
         db = openDB(inputFile)
         data = readDB(db)
@@ -293,6 +268,7 @@ def trainModel(inputFile):
 
     train_ds = prepareData(WORKING_DIR, mode = WorkMode.Train, dataSplit = DataSplit.Train)
     val_ds = prepareData(WORKING_DIR, mode = WorkMode.Train, dataSplit = DataSplit.Validation)
+
     K.set_image_data_format('channels_last')
     model = defineModel()
     model.summary()
@@ -352,7 +328,9 @@ def writeOutputCSV(outputFilePath, data: dataManagement.TestData, predictions):
     # Write actual csv 
     header = np.concatenate((['image', 'char'], fontNames))
     result = np.vstack((header, outputData))
-    np.savetxt(outputFilePath, result, delimiter=',', fmt='%s')
+    with open(outputFilePath, 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerows(result)
 
 '''
 Font Conversion
@@ -365,11 +343,10 @@ def convertPrediction(prediction):
     if prediction == 4: return "Titillium Web"
 
 def testModel(inputFile, outputFile):
-    WORKING_DIR = os.path.dirname(inputFile)
     db = openDB(inputFile)
     data = readDB(db, mode = WorkMode.Test)
     organaizeData(data, WORKING_DIR, WorkMode.Test)
-    test_ds = prepareData(WORKING_DIR, mode = WorkMode.Train, dataSplit = DataSplit.Validation)
+    test_ds = prepareData(WORKING_DIR, mode = WorkMode.Test, dataSplit = DataSplit.Validation)
     # Load Model
     model = tf.keras.models.load_model(MODEL_PATH)
     predictions = model.predict(test_ds)

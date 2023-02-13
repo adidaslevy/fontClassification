@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args": ["-t", "-i /home/alevy/studies/computerVision/Project/SynthText_train.h5"],
+            "args": ["-t", "-i /home/alevy/studies/computerVision/fontClassification/SynthText_train.h5"],
             "justMyCode": true
         },
         {
@@ -19,7 +19,7 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args": ["-p", "-i /home/alevy/studies/computerVision/Project/SynthText_train.h5", "-o", "/home/alevy/studies/computerVision/Project/result.csv"],
+            "args": ["-p", "-i /home/alevy/studies/computerVision/fontClassification/SynthText_test.h5", "-o", "/home/alevy/studies/computerVision/Project/result.csv"],
             "justMyCode": true
         }
     ]

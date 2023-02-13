@@ -1,19 +1,20 @@
 import os
+import pickle
 '''
 Pickle management
 '''
+LABELS_PICKLE = 'labels.pickle'
 
-def checkAugmentedDataPickle(path):
-    return os.path.exists(os.path.join(path, AUGMENTED_DATA_PICKLE)) and \
-        os.path.exists(os.path.join(path, LABELS_PICKLE))
+def checkLabelsPickle(path):
+    return os.path.exists(os.path.join(path, LABELS_PICKLE))
 
 def pickleData(data, path):
-    pickle_out_data = open(os.path.join(BASE_PATH, path), "wb")
-    pickle.dump(data, pickle_out_data)
+    pickle_out_data = open(os.path.join(path, LABELS_PICKLE), "wb")
+    pickle.dump(np.array(data), pickle_out_data)
     pickle_out_data.close()
 
 def getPickle(path):
-    pickleIn = open(os.path.join(BASE_PATH, path), "rb")
+    pickleIn = open(os.path.join(path, LABELS_PICKLE), "rb")
     return pickle.load(pickleIn)
 
 def findMaxLabel(labels):
@@ -26,6 +27,9 @@ def findMaxLabel(labels):
             counter = labels.count(i)
     print("{} label is found max: {}".format(maxLabel, counter))
     return maxLabel, counter
+
+IMAGE_LENGTH = 32
+IMAGE_WIDTH = 32
 
 def isValidFile(parser, arg):
     arg = arg.lstrip()
