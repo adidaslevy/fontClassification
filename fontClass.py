@@ -70,6 +70,21 @@ def readDB(db, mode = dataManagement.WorkMode.Train) -> dataManagement.TestData:
 '''
 Organize and augment data
 '''
+
+def convertLabel(label):
+    label = label.decode()
+    if label == 'Open Sans':
+        return 0
+    elif label == 'Sansation':
+        return 1
+    elif label == 'Titillium Web':
+        return 2
+    elif label == 'Ubuntu Mono':
+        return 3
+    elif label == 'Alex Brush':
+        return 4
+
+
 def organaizeData(data: dataManagement.TrainData, workingDir: str, mode = WorkMode.Train):
     counter=0
     if (os.path.exists(os.path.join(WORKING_DIR, 'dataset' if (mode == WorkMode.Train) else 'datatest'))):
@@ -83,7 +98,8 @@ def organaizeData(data: dataManagement.TrainData, workingDir: str, mode = WorkMo
     for image in data:
         for i in range(len(image.charImages)):
             label = image.fonts[i] if (mode == WorkMode.Train) else None
-            #label = conv_label(label)
+            if (mode == WorkMode.Train):
+                label = convertLabel(label)
             pilImage = []
             try:
                 pilImage = image.charImages[i]
@@ -129,8 +145,6 @@ def organaizeData(data: dataManagement.TrainData, workingDir: str, mode = WorkMo
 '''
 Augmentation methods
 '''
-
-
 def augmentAndBalance(dataSet: dict, n: int, workingDir: str = WORKING_DIR, imgSize: tuple = ((IMAGE_LENGTH, IMAGE_WIDTH))) -> dict:
         datasetDir = os.path.join(workingDir, 'dataset')
         # create and store the augmented images  
@@ -208,7 +222,7 @@ def prepareData(workingDir: str, mode: WorkMode, dataSplit: DataSplit):
         subset = "training" if (mode == WorkMode.Train and dataSplit == DataSplit.Train) 
                                 else "validation" if (mode == WorkMode.Train and dataSplit == DataSplit.Validation) else None,
         color_mode='grayscale',
-        label_mode='categorical' if (mode == WorkMode.Train) else None,
+        label_mode='int' if (mode == WorkMode.Train) else None,
         seed=42,
         shuffle=True,
         image_size=(IMAGE_LENGTH, IMAGE_WIDTH),
@@ -221,7 +235,7 @@ def prepareData(workingDir: str, mode: WorkMode, dataSplit: DataSplit):
 def prepareModelParams(model):
     optimizer = tf.keras.optimizers.Adam(learning_rate = LEARNING_RATE)
     #optimizer = tf.keras.optimizers.SGD(learning_rate = LEARNING_RATE)
-    model.compile(loss=keras.losses.CategoricalCrossentropy(from_logits=False), 
+    model.compile(loss=keras.losses.SparseCategoricalCrossentropy(from_logits=False), 
                   optimizer=optimizer, metrics=['accuracy'])
     early_stopping=callbacks.EarlyStopping(monitor='val_loss', min_delta=0, patience=20, verbose=0, mode='min')
     filepath=os.path.join(WORKING_DIR, "top_model.h5")
@@ -303,7 +317,7 @@ def majorityWordVoting(predictions, data: dataManagement.TestData):
 
 
 def writeOutputCSV(outputFilePath, data: dataManagement.TestData, predictions):
-    fontNames = ["Alex Brush", "Open Sans", "Sansation", "Ubuntu Mono", "Titillium Web"]
+    fontNames = ["Open Sans", "Sansation", "Titillium Web", "Ubuntu Mono", "Alex Brush"]
     outputData = []
     imageNameArray = []
     charArrayResult = []
@@ -335,13 +349,6 @@ def writeOutputCSV(outputFilePath, data: dataManagement.TestData, predictions):
 '''
 Font Conversion
 '''
-def convertPrediction(prediction):
-    if prediction == 0: return "Alex Brush"
-    if prediction == 1: return "Open Sans"
-    if prediction == 2: return "Sansation"
-    if prediction == 3: return "Ubuntu Mono"
-    if prediction == 4: return "Titillium Web"
-
 def testModel(inputFile, outputFile):
     db = openDB(inputFile)
     data = readDB(db, mode = WorkMode.Test)
